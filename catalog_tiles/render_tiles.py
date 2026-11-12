@@ -25,6 +25,7 @@ import argparse
 import csv
 import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -274,6 +275,25 @@ def content_key(h: Hotel, show_price: bool, logo_hash: str) -> str:
     return hashlib.sha1("\x1f".join(parts).encode()).hexdigest()[:12]
 
 
+def sticky_price(current: int | None, shown: int | None, args, stats) -> int | None:
+    """Цена для плитки. Нарисованная цена держится, пока текущая в коридоре
+    [shown - max_drop%, shown + max_rise%], чтобы плитка (и ссылка) не менялась каждую ночь.
+    Нет цены сегодня (нет номеров на завтра) — оставляем прежнюю: в объявлении у гостя свои
+    даты, «от» — ориентир. Новая цена округляется ВНИЗ до --price-step."""
+    if current is None:
+        if shown is not None:
+            stats["price_kept"] += 1
+        return shown
+    if shown is not None and (shown * (1 - args.max_drop_pct / 100) <= current
+                              <= shown * (1 + args.max_rise_pct / 100)):
+        stats["price_kept"] += 1
+        return shown
+    stats["price_updated"] += 1
+    if args.price_step > 1:
+        current = max(args.price_step, (current // args.price_step) * args.price_step)
+    return current
+
+
 def safe_id(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", s)[:120]
 
@@ -291,9 +311,17 @@ def main() -> None:
     ap.add_argument("--logo-height", type=int, default=64)
     ap.add_argument("--no-price", action="store_true",
                     help="не рисовать цену (меньше перерисовок и повторных загрузок в Meta)")
-    ap.add_argument("--price-step", type=int, default=0,
+    ap.add_argument("--price-step", type=int, default=1000,
                     help="округлять цену ВНИЗ до шага, напр. 1000: «от ₸82 000» вместо 82 711; "
                          "реже меняется картинка, «от» остаётся правдой")
+    ap.add_argument("--price-state", default="price_state.json",
+                    help="файл, где хранится цена, нарисованная на каждой плитке "
+                         "(держать между запусками рядом с tiles/)")
+    ap.add_argument("--max-rise-pct", type=float, default=10,
+                    help="перерисовать, если цена выросла больше чем на N%% от нарисованной: "
+                         "иначе «от» на плитке сильно ниже реальной")
+    ap.add_argument("--max-drop-pct", type=float, default=30,
+                    help="перерисовать, если цена упала больше чем на N%% (показать выгоду)")
     ap.add_argument("--kind", default="",
                     help="одна подпись типа для всех строк, если в фиде нет колонки типа. "
                          "По умолчанию пусто: в каталоге есть квартиры и гостевые дома, "
@@ -343,7 +371,11 @@ def main() -> None:
             sys.exit(f"В фиде нет колонки {col!r}. Колонки: {header}")
 
     stats = {"rows": len(rows), "rendered": 0, "reused": 0, "failed": 0, "no_price": 0,
-             "non_kzt_price": 0}
+             "non_kzt_price": 0, "price_kept": 0, "price_updated": 0}
+    state_path = Path(args.price_state)
+    price_state: dict[str, int] = (json.loads(state_path.read_text())
+                                   if state_path.exists() else {})
+    new_state: dict[str, int] = {}
     tile_for_row: dict[int, str] = {}
     jobs = []
 
@@ -354,8 +386,7 @@ def main() -> None:
             price = None
         if price is None:
             stats["no_price"] += 1
-        elif args.price_step > 1:
-            price = (price // args.price_step) * args.price_step
+        price = sticky_price(price, price_state.get(row[args.col_id]), args, stats)
         h = Hotel(
             hotel_id=row[args.col_id],
             name=row.get(args.col_name, "").strip(),
@@ -368,6 +399,8 @@ def main() -> None:
         if not h.photo_url:
             stats["failed"] += 1
             continue
+        if price is not None:
+            new_state[h.hotel_id] = price
         fname = f"{safe_id(h.hotel_id)}_{content_key(h, not args.no_price, logo_hash)}.jpg"
         tile_for_row[i] = fname
         if (out_dir / fname).exists():
@@ -398,6 +431,13 @@ def main() -> None:
                 print(f"[warn] {h.hotel_id}: {e}", file=sys.stderr)
     elapsed = time.time() - t0
 
+    # Запоминаем нарисованные цены (только у строк, где плитка есть).
+    ok_ids = {rows[i][args.col_id] for i in tile_for_row}
+    tmp_state = state_path.with_suffix(".tmp")
+    tmp_state.write_text(json.dumps({k: v for k, v in new_state.items() if k in ok_ids},
+                                    ensure_ascii=False))
+    os.replace(tmp_state, state_path)
+
     # Новый фид: плитка -> image[0], исходные фото сдвигаются на +1.
     groups = image_columns(header)
     suffixes = sorted({c.split("].", 1)[1] for cols in groups.values() for c in cols})
@@ -424,7 +464,8 @@ def main() -> None:
     per = (elapsed / stats["rendered"] * 1000) if stats["rendered"] else 0
     print(f"строк: {stats['rows']} | нарисовано: {stats['rendered']} | без изменений: "
           f"{stats['reused']} | ошибок: {stats['failed']} | без цены: {stats['no_price']} "
-          f"(из них не в KZT: {stats['non_kzt_price']}) | {elapsed:.1f} c, ~{per:.0f} мс/плитку")
+          f"(из них не в KZT: {stats['non_kzt_price']}) | цена держится: {stats['price_kept']}, "
+          f"обновлена: {stats['price_updated']} | {elapsed:.1f} c, ~{per:.0f} мс/плитку")
 
 
 if __name__ == "__main__":
