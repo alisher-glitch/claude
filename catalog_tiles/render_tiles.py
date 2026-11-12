@@ -331,7 +331,7 @@ def main() -> None:
     ap.add_argument("--col-city", default="address.city")
     ap.add_argument("--col-stars", default="star_rating")
     ap.add_argument("--col-price", default="base_price")
-    ap.add_argument("--col-kind", default="", help="колонка с типом жилья, если есть")
+    ap.add_argument("--col-kind", default="category", help="колонка с типом жилья, если есть")
     ap.add_argument("--max-images", type=int, default=20, help="лимит Meta на число фото")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--timeout", type=int, default=20)
@@ -387,11 +387,16 @@ def main() -> None:
         if price is None:
             stats["no_price"] += 1
         price = sticky_price(price, price_state.get(row[args.col_id]), args, stats)
+        kind = row.get(args.col_kind, "").strip() if args.col_kind else args.kind
+        name = row.get(args.col_name, "").strip()
+        # «Отель, Астана» + «Отель Rixos» — убираем повтор типа в начале названия.
+        if kind and name.lower().startswith(kind.lower() + " ") and len(name) > len(kind) + 1:
+            name = name[len(kind) + 1:].strip()
         h = Hotel(
             hotel_id=row[args.col_id],
-            name=row.get(args.col_name, "").strip(),
+            name=name,
             city=row.get(args.col_city, "").strip(),
-            kind=(row.get(args.col_kind, "").strip() if args.col_kind else args.kind),
+            kind=kind,
             stars=parse_stars(row.get(args.col_stars, "")),
             price_kzt=price,
             photo_url=row["image[0].url"].strip(),
