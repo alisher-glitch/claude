@@ -279,7 +279,7 @@ def sticky_price(current: int | None, shown: int | None, args, stats) -> int | N
     """Цена для плитки. Нарисованная цена держится, пока текущая в коридоре
     [shown - max_drop%, shown + max_rise%], чтобы плитка (и ссылка) не менялась каждую ночь.
     Нет цены сегодня (нет номеров на завтра) — оставляем прежнюю: в объявлении у гостя свои
-    даты, «от» — ориентир. Новая цена округляется ВНИЗ до --price-step."""
+    даты, «от» — ориентир. Новая цена берётся как есть (округление вниз — только если задан --price-step)."""
     if current is None:
         if shown is not None:
             stats["price_kept"] += 1
@@ -311,7 +311,7 @@ def main() -> None:
     ap.add_argument("--logo-height", type=int, default=64)
     ap.add_argument("--no-price", action="store_true",
                     help="не рисовать цену (меньше перерисовок и повторных загрузок в Meta)")
-    ap.add_argument("--price-step", type=int, default=1000,
+    ap.add_argument("--price-step", type=int, default=0,
                     help="округлять цену ВНИЗ до шага, напр. 1000: «от ₸82 000» вместо 82 711; "
                          "реже меняется картинка, «от» остаётся правдой")
     ap.add_argument("--price-state", default="price_state.json",
